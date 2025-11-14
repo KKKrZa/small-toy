@@ -10,3 +10,4 @@ wheels/
 .venv
 accounts.csv
 config.json
+referral_pool.json

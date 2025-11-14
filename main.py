@@ -54,10 +54,10 @@ def generate_name():
 def generate_password():
     """随机生成密码（10-14位，包含大小写字母、数字、特殊字符，特殊字符占比更多）"""
     length = random.randint(10, 14)
-    special_chars = "￥%&@"
+    special_chars = ")*+,-./:;<=>?@[\]^_`{|}"
     
     # 确保密码包含足够的特殊字符（2-4个）
-    num_special = random.randint(2, 4)
+    num_special = random.randint(4, 6)
     num_upper = random.randint(2, 3)
     num_lower = random.randint(2, 3)
     num_digit = random.randint(2, 3)
@@ -134,21 +134,21 @@ def signup_account(config, email, referral_code, max_retries=5):
             # 如果不是最后一次重试，等待1分钟后重试
             retry_count += 1
             if retry_count < max_retries:
-                print(f"\n等待60秒后重试...")
-                time.sleep(60)
+                print(f"\n等待30秒后重试...")
+                time.sleep(30)
             
         except requests.RequestException as e:
             print(f"\n请求异常: {e}")
             retry_count += 1
             if retry_count < max_retries:
-                print(f"\n等待60秒后重试...")
-                time.sleep(60)
+                print(f"\n等待30秒后重试...")
+                time.sleep(30)
         except json.JSONDecodeError as e:
             print(f"\nJSON解析失败: {e}")
             retry_count += 1
             if retry_count < max_retries:
-                print(f"\n等待60秒后重试...")
-                time.sleep(60)
+                print(f"\n等待30秒后重试...")
+                time.sleep(30)
     
     print(f"\n✗ 注册失败: 已达到最大重试次数 ({max_retries})")
     return {
