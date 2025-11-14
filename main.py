@@ -52,28 +52,40 @@ def generate_name():
 
 
 def generate_password():
-    """随机生成密码（8-12位，包含大小写字母、数字、特殊字符）"""
-    length = random.randint(8, 12)
-    chars = string.ascii_letters + string.digits + "$@&%"
-    password = ''.join(random.choice(chars) for _ in range(length))
+    """随机生成密码（10-14位，包含大小写字母、数字、特殊字符，特殊字符占比更多）"""
+    length = random.randint(10, 14)
+    special_chars = "￥%&@"
     
-    # 确保包含至少一个大写、小写、数字和特殊字符
-    if not any(c.isupper() for c in password):
-        password = password[:-1] + random.choice(string.ascii_uppercase)
-    if not any(c.islower() for c in password):
-        password = password[:-1] + random.choice(string.ascii_lowercase)
-    if not any(c.isdigit() for c in password):
-        password = password[:-1] + random.choice(string.digits)
-    if not any(c in "$@&%" for c in password):
-        password = password[:-1] + random.choice("$@&%")
+    # 确保密码包含足够的特殊字符（2-4个）
+    num_special = random.randint(2, 4)
+    num_upper = random.randint(2, 3)
+    num_lower = random.randint(2, 3)
+    num_digit = random.randint(2, 3)
     
-    return password
+    # 剩余长度随机分配
+    remaining = length - (num_special + num_upper + num_lower + num_digit)
+    
+    # 生成各类字符
+    password_chars = []
+    password_chars.extend(random.choices(special_chars, k=num_special))
+    password_chars.extend(random.choices(string.ascii_uppercase, k=num_upper))
+    password_chars.extend(random.choices(string.ascii_lowercase, k=num_lower))
+    password_chars.extend(random.choices(string.digits, k=num_digit))
+    
+    # 填充剩余长度
+    if remaining > 0:
+        all_chars = string.ascii_letters + string.digits + special_chars
+        password_chars.extend(random.choices(all_chars, k=remaining))
+    
+    # 打乱顺序
+    random.shuffle(password_chars)
+    
+    return ''.join(password_chars)
 
 
-def signup_account(config, email, max_retries=5):
+def signup_account(config, email, referral_code, max_retries=5):
     """注册账号，带重试机制"""
     signup_url = "https://megallm.io/api/auth/signup"
-    referral_code = config['referral_code']
     
     name = generate_name()
     password = generate_password()
@@ -278,6 +290,97 @@ def verify_email(config, email, otp):
         return {"success": False}
 
 
+def login_and_get_session(email, password):
+    """登录并获取session token"""
+    try:
+        # 使用session来保持cookie
+        session = requests.Session()
+        
+        # 步骤0: 访问session接口获取初始cookies
+        print(f"\n访问session接口...")
+        session_response = session.get("https://megallm.io/api/auth/session")
+        print(f"✓ Session接口响应: {session_response.status_code}")
+        
+        # 步骤1: 获取CSRF token
+        print(f"\n获取CSRF token...")
+        csrf_response = session.get("https://megallm.io/api/auth/csrf")
+        csrf_data = csrf_response.json()
+        csrf_token = csrf_data.get('csrfToken')
+        
+        if not csrf_token:
+            print("✗ 未能获取CSRF token")
+            return None
+        
+        print(f"✓ CSRF token: {csrf_token[:20]}...")
+        
+        # 步骤2: 登录获取session token
+        print(f"\n发起登录请求...")
+        login_data = {
+            'email': email,
+            'password': password,
+            'redirect': 'false',
+            'csrfToken': csrf_token,
+            'callbackUrl': 'https://megallm.io/auth/signin',
+            'json': 'true'
+        }
+        
+        # 使用session发送请求，自动携带所有cookies
+        login_response = session.post(
+            "https://megallm.io/api/auth/callback/credentials",
+            data=login_data,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'}
+        )
+        
+        print(f"登录响应状态码: {login_response.status_code}")
+        print(f"登录响应内容: {login_response.text[:200]}...")
+        
+        # 从cookies中提取session token
+        session_token = session.cookies.get('__Secure-next-auth.session-token')
+        
+        if session_token:
+            print(f"✓ 成功获取session token")
+            return session_token
+        else:
+            print(f"✗ 未能获取session token")
+            print(f"所有cookies: {list(session.cookies.keys())}")
+            return None
+            
+    except Exception as e:
+        print(f"✗ 登录异常: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def get_referral_stats(session_token):
+    """获取推荐统计信息"""
+    try:
+        print(f"\n获取推荐统计...")
+        cookies = {'__Secure-next-auth.session-token': session_token}
+        
+        response = requests.get(
+            "https://megallm.io/api/referral/stats",
+            cookies=cookies
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            referral_code = data.get('referralCode')
+            total_referred = data.get('stats', {}).get('totalReferred', 0)
+            
+            print(f"✓ 推荐码: {referral_code}")
+            print(f"  总推荐人数: {total_referred}")
+            
+            return referral_code
+        else:
+            print(f"✗ 获取推荐统计失败: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        print(f"✗ 获取推荐统计异常: {e}")
+        return None
+
+
 def save_to_csv(email, password, api_key, csv_file='accounts.csv'):
     """保存账号信息到CSV文件"""
     import csv
@@ -301,55 +404,126 @@ def save_to_csv(email, password, api_key, csv_file='accounts.csv'):
     print(f"\n✓ 账号信息已保存到 {csv_file}")
 
 
+# 全局邀请码池
+REFERRAL_CODE_POOL = []
+REFERRAL_POOL_FILE = 'referral_pool.json'
+
+
+def load_referral_pool():
+    """从本地文件加载邀请码池"""
+    global REFERRAL_CODE_POOL
+    import os
+    
+    if os.path.exists(REFERRAL_POOL_FILE):
+        try:
+            with open(REFERRAL_POOL_FILE, 'r', encoding='utf-8') as f:
+                REFERRAL_CODE_POOL = json.load(f)
+            print(f"✓ 已从本地加载 {len(REFERRAL_CODE_POOL)} 个邀请码")
+        except Exception as e:
+            print(f"⚠ 加载邀请码池失败: {e}")
+            REFERRAL_CODE_POOL = []
+    else:
+        print("本地无邀请码池文件，将使用配置中的默认邀请码")
+        REFERRAL_CODE_POOL = []
+
+
+def save_referral_pool():
+    """将邀请码池保存到本地文件"""
+    global REFERRAL_CODE_POOL
+    try:
+        with open(REFERRAL_POOL_FILE, 'w', encoding='utf-8') as f:
+            json.dump(REFERRAL_CODE_POOL, f, ensure_ascii=False, indent=2)
+        print(f"✓ 邀请码池已保存到本地文件")
+    except Exception as e:
+        print(f"⚠ 保存邀请码池失败: {e}")
+
+
+def update_referral_pool(new_code):
+    """更新邀请码池并保存到本地"""
+    global REFERRAL_CODE_POOL
+    if new_code and new_code not in REFERRAL_CODE_POOL:
+        REFERRAL_CODE_POOL.append(new_code)
+        print(f"\n✓ 邀请码池已更新，当前包含 {len(REFERRAL_CODE_POOL)} 个邀请码")
+        save_referral_pool()
+
+
+def get_random_referral_code(config):
+    """从池中随机获取邀请码，如果池为空则使用配置中的"""
+    global REFERRAL_CODE_POOL
+    if REFERRAL_CODE_POOL:
+        code = random.choice(REFERRAL_CODE_POOL)
+        print(f"使用邀请码池中的邀请码: {code}")
+        return code
+    else:
+        code = config.get('referral_code', '')
+        print(f"使用配置中的默认邀请码: {code}")
+        return code
+
+
 def register_once(config):
     """执行一次完整的注册流程"""
     print("\n" + "="*60)
     print("开始新的注册流程")
     print("="*60)
     
-    # 步骤1: 获取临时邮箱
-    print("\n[步骤1] 获取临时邮箱...")
+    # 步骤1: 获取邀请码
+    print("\n[步骤1] 获取邀请码...")
+    referral_code = get_random_referral_code(config)
+    
+    # 步骤2: 获取临时邮箱
+    print("\n[步骤2] 获取临时邮箱...")
     email = get_temp_email(config)
     
     if not email:
         print("✗ 获取邮箱失败")
         return False
     
-    # 步骤2: 注册账号
-    print("\n[步骤2] 注册账号...")
-    account_info = signup_account(config, email)
+    # 步骤3: 注册账号
+    print("\n[步骤3] 注册账号...")
+    account_info = signup_account(config, email, referral_code)
     
     if not account_info['success']:
         print("\n✗ 注册失败")
         return False
     
-    # 步骤3: 轮询邮箱获取验证码
-    print("\n[步骤3] 轮询邮箱获取验证码...")
+    # 步骤4: 轮询邮箱获取验证码
+    print("\n[步骤4] 轮询邮箱获取验证码...")
     emails = poll_emails(config, email, timeout=600, poll_interval=5)
     
     if not emails:
         print("\n✗ 未收到验证邮件")
         return False
     
-    # 步骤4: 提取验证码
-    print("\n[步骤4] 提取验证码...")
+    # 步骤5: 提取验证码
+    print("\n[步骤5] 提取验证码...")
     verification_code = extract_verification_code(emails)
     
     if not verification_code:
         print("\n✗ 未能提取验证码")
         return False
     
-    # 步骤5: 验证邮箱
-    print("\n[步骤5] 验证邮箱...")
+    # 步骤6: 验证邮箱
+    print("\n[步骤6] 验证邮箱...")
     verify_result = verify_email(config, email, verification_code)
     
     if not verify_result['success']:
         print("\n✗ 邮箱验证失败")
         return False
     
-    # 步骤6: 保存账号信息
-    print("\n[步骤6] 保存账号信息...")
+    # 步骤7: 保存账号信息
+    print("\n[步骤7] 保存账号信息...")
     save_to_csv(email, account_info['password'], verify_result['apiKey'])
+    
+    # 步骤8: 登录获取session token并更新邀请码池
+    print("\n[步骤8] 登录获取推荐码...")
+    session_token = login_and_get_session(email, account_info['password'])
+    
+    if session_token:
+        new_referral_code = get_referral_stats(session_token)
+        if new_referral_code:
+            update_referral_pool(new_referral_code)
+    else:
+        print("⚠ 未能获取session token，跳过邀请码池更新")
     
     print("\n" + "="*60)
     print("✓ 注册流程成功完成!")
@@ -368,6 +542,10 @@ def main():
     
     # 加载配置
     config = load_config()
+    
+    # 加载本地邀请码池
+    print("\n加载邀请码池...")
+    load_referral_pool()
     
     success_count = 0
     fail_count = 0
